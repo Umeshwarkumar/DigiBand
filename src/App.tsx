@@ -1,9 +1,12 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { Music, Speaker, Drum } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { Music, Speaker, Drum, Sun, Moon, Zap } from 'lucide-react';
 import * as Tone from 'tone';
 import { CHORDS } from './chords';
 import type { Chord } from './chords';
 import './App.css';
+import { generateChordColors } from './utils/colorUtils';
+import { AudioVisualizer } from './components/AudioVisualizer';
+import { BeastModeBackground } from './components/BeastModeBackground';
 
 interface InstrumentState {
   piano: boolean;
@@ -46,14 +49,29 @@ const getGuitarVoicedNotes = (notes: string[]): string[] => {
     return `${note}${currentOctave}`;
   });
 };
-
 function App() {
+  // Theme and Beast Mode States
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+
+  const [beastMode, setBeastMode] = useState<boolean>(false);
+
+  // Stable random colors mapping generated once per session
+  const chordColorMap = useMemo(() => {
+    return generateChordColors(CHORDS.map((c) => c.name));
+  }, []);
+
+  // Apply theme to document
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
   // Instrument Toggles
   const [instruments, setInstruments] = useState<InstrumentState>({
     piano: true,
     guitar: true,
     drums: true,
   });
+
 
   // Current Chord State (Default is C Major)
   const [currentChord, setCurrentChord] = useState<Chord>(CHORDS[0]);
@@ -187,6 +205,7 @@ function App() {
   const hihatSynthRef = useRef<Tone.NoiseSynth | null>(null);
   const openHihatSynthRef = useRef<Tone.NoiseSynth | null>(null);
   const volumeNodeRef = useRef<Tone.Volume | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
 
   // Initialize Tone.js audio engine on user interaction
   const initAudio = useCallback(async () => {
@@ -194,9 +213,17 @@ function App() {
       await Tone.start();
     }
 
+    if (!analyserRef.current) {
+      const ctx = Tone.getContext().rawContext;
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      analyserRef.current = analyser;
+    }
+
     if (!volumeNodeRef.current) {
       // Create master volume node and connect to destination
       const volNode = new Tone.Volume(Tone.gainToDb(volumeRef.current / 100)).toDestination();
+      volNode.connect(analyserRef.current);
       volumeNodeRef.current = volNode;
     }
 
@@ -522,295 +549,336 @@ function App() {
 
   return (
     <div className="app-container">
-      {/* 1. HEADER */}
+      {/* Beast Mode Background Layer */}
+      <BeastModeBackground
+        analyserRef={analyserRef}
+        currentChordName={currentChord.name}
+        chordColorMap={chordColorMap}
+        isActive={beastMode}
+      />
+
+      {/* 1. HEADER with toggles inside it */}
       <header className="app-header">
-        <h1>Virtual Band</h1>
-        <p className="app-subtitle">Play. Sing. Create.</p>
+        <div className="header-left">
+          <h1>Virtual Band</h1>
+          <p className="app-subtitle">Play. Sing. Create.</p>
+        </div>
+        <div className="header-right">
+          <button
+            className="toggle-btn"
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            aria-label="Toggle Theme"
+          >
+            {theme === 'dark' ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}
+            {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
+          </button>
+          <button
+            className={`toggle-btn beast-mode-btn ${beastMode ? 'active' : ''}`}
+            onClick={() => setBeastMode(!beastMode)}
+            aria-label="Toggle Beast Mode"
+          >
+            <Zap size={16} aria-hidden="true" />
+            BEAST MODE
+          </button>
+        </div>
       </header>
 
-      {/* 2. INSTRUMENT PANEL */}
-      <section>
-        <h2 className="section-title">Instruments</h2>
-        <div className="instruments-grid">
-          {/* Piano */}
-          <div className={`instrument-card ${!instruments.piano ? 'disabled' : ''}`}>
-            <div className="instrument-info">
-              <span className="instrument-icon"><Music size={24} /></span>
-              <span className="instrument-name">Piano</span>
+      {/* Main Two-Column Layout */}
+      <div className="main-layout">
+        {/* LEFT COLUMN: Instruments, Current Chord, Visualizer, BPM/Volume controls, Action/Status */}
+        <div className="layout-column left-column">
+          {/* 2. INSTRUMENT PANEL */}
+          <section className="layout-section">
+            <h2 className="section-title">Instruments</h2>
+            <div className="instruments-grid">
+              {/* Piano */}
+              <div className={`instrument-card ${!instruments.piano ? 'disabled' : ''}`}>
+                <div className="instrument-info">
+                  <span className="instrument-icon"><Music size={20} /></span>
+                  <span className="instrument-name">Piano</span>
+                </div>
+                <label className="switch">
+                  <input
+                    type="checkbox"
+                    checked={instruments.piano}
+                    onChange={() => toggleInstrument('piano')}
+                  />
+                  <span className="slider"></span>
+                </label>
+              </div>
+
+              {/* Guitar */}
+              <div className={`instrument-card ${!instruments.guitar ? 'disabled' : ''}`}>
+                <div className="instrument-info">
+                  <span className="instrument-icon"><Speaker size={20} /></span>
+                  <span className="instrument-name">Guitar</span>
+                </div>
+                <label className="switch">
+                  <input
+                    type="checkbox"
+                    checked={instruments.guitar}
+                    onChange={() => toggleInstrument('guitar')}
+                  />
+                  <span className="slider"></span>
+                </label>
+              </div>
+
+              {/* Drums */}
+              <div className={`instrument-card ${!instruments.drums ? 'disabled' : ''}`}>
+                <div className="instrument-info">
+                  <span className="instrument-icon"><Drum size={20} /></span>
+                  <span className="instrument-name">Drums</span>
+                </div>
+                <label className="switch">
+                  <input
+                    type="checkbox"
+                    checked={instruments.drums}
+                    onChange={() => toggleInstrument('drums')}
+                  />
+                  <span className="slider"></span>
+                </label>
+              </div>
             </div>
-            <label className="switch">
+          </section>
+
+          {/* 3. CURRENT CHORD */}
+          <section className="layout-section current-chord-container">
+            <div className="current-chord-label">Current Chord</div>
+            <div className="current-chord-value">{currentChord.name}</div>
+            <div style={{ color: 'var(--text-muted)', marginTop: '4px', fontSize: '0.85rem', letterSpacing: '2px', fontFamily: 'var(--mono)' }}>
+              Notes: {currentChord.notes.join(' - ')}
+            </div>
+          </section>
+
+          {/* Audio Visualizer */}
+          <AudioVisualizer analyserRef={analyserRef} />
+
+          {/* 6. CONTROLS */}
+          <section className="layout-section controls-grid">
+            <div className="control-item">
+              <div className="control-label-row">
+                <span className="control-label">BPM</span>
+                <span className="control-value">{bpm}</span>
+              </div>
               <input
-                type="checkbox"
-                checked={instruments.piano}
-                onChange={() => toggleInstrument('piano')}
+                type="range"
+                min="60"
+                max="200"
+                value={bpm}
+                onChange={(e) => setBpm(Number(e.target.value))}
               />
-              <span className="slider"></span>
-            </label>
-          </div>
-
-          {/* Guitar */}
-          <div className={`instrument-card ${!instruments.guitar ? 'disabled' : ''}`}>
-            <div className="instrument-info">
-              <span className="instrument-icon"><Speaker size={24} /></span>
-              <span className="instrument-name">Guitar</span>
             </div>
-            <label className="switch">
+
+            <div className="control-item">
+              <div className="control-label-row">
+                <span className="control-label">Volume</span>
+                <span className="control-value">{volume}%</span>
+              </div>
               <input
-                type="checkbox"
-                checked={instruments.guitar}
-                onChange={() => toggleInstrument('guitar')}
+                type="range"
+                min="0"
+                max="100"
+                value={volume}
+                onChange={(e) => setVolume(Number(e.target.value))}
               />
-              <span className="slider"></span>
-            </label>
-          </div>
-
-          {/* Drums */}
-          <div className={`instrument-card ${!instruments.drums ? 'disabled' : ''}`}>
-            <div className="instrument-info">
-              <span className="instrument-icon"><Drum size={24} /></span>
-              <span className="instrument-name">Drums</span>
             </div>
-            <label className="switch">
-              <input
-                type="checkbox"
-                checked={instruments.drums}
-                onChange={() => toggleInstrument('drums')}
-              />
-              <span className="slider"></span>
-            </label>
+          </section>
+
+          {/* Action Row & Status Bar combined horizontally */}
+          <div className="actions-status-row">
+            <button className="reset-btn" onClick={handleReset}>
+              Reset Band
+            </button>
+            <footer className="status-bar">
+              <span className="status-label">Status</span>
+              <span className="status-value">
+                <span className="status-indicator"></span>
+                {status}
+              </span>
+            </footer>
           </div>
         </div>
-      </section>
 
-      {/* 3. CURRENT CHORD */}
-      <section className="current-chord-container">
-        <div className="current-chord-label">Current Chord</div>
-        <div className="current-chord-value">{currentChord.name}</div>
-        <div style={{ color: 'var(--text-muted)', marginTop: '8px', fontSize: '0.9rem', letterSpacing: '2px', fontFamily: 'var(--mono)' }}>
-          Notes: {currentChord.notes.join(' - ')}
-        </div>
-      </section>
-
-      {/* 4. CHORD KEYBOARD */}
-      <section className="keyboard-section">
-        <h2 className="section-title">Chord Keyboard</h2>
-        <div className="keyboard-grid">
-          {CHORDS.map((k) => (
-            <div
-              key={k.trigger}
-              className={`music-key ${pressedKeys[k.trigger] ? 'active' : ''}`}
-              onClick={() => handleChordSelect(k)}
-            >
-              <span className="key-trigger">{k.trigger}</span>
-              <span className="key-label">{k.displayName}</span>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* 5. DRUM KEYBOARD */}
-      <section className="keyboard-section">
-        <h2 className="section-title">Drum Keyboard</h2>
-        <div className="keyboard-grid">
-          {drumKeys.map((k) => (
-            <div
-              key={k.trigger}
-              className={`music-key drum-key ${pressedKeys[k.trigger] ? 'active' : ''}`}
-              onClick={() => handleDrumSelect(k.trigger)}
-            >
-              <span className="key-trigger">{k.trigger}</span>
-              <span className="key-label">{k.display}</span>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* 5.5 CHORD PROGRESSION */}
-      <section className="progression-section">
-        <h2 className="section-title">Chord Progression</h2>
-        <div className="progression-display">
-          {progression.length === 0 ? (
-            <span className="progression-empty">No chords recorded. Press A/S/D/F/G/H/J while Recording.</span>
-          ) : (
-            <div className="progression-steps-list">
-              {progression.map((chord, idx) => (
-                <span
-                  key={idx}
-                  className={`progression-step ${playbackIndex === idx ? 'active' : ''}`}
+        {/* RIGHT COLUMN: Chord Keyboard, Drum Keyboard, Chord Progression, Predefined Drum Patterns */}
+        <div className="layout-column right-column">
+          {/* 4. CHORD KEYBOARD */}
+          <section className="layout-section keyboard-section">
+            <h2 className="section-title">Chord Keyboard</h2>
+            <div className="keyboard-grid">
+              {CHORDS.map((k) => (
+                <div
+                  key={k.trigger}
+                  className={`music-key ${pressedKeys[k.trigger] ? 'active' : ''}`}
+                  onClick={() => handleChordSelect(k)}
                 >
-                  {chord.displayName}
-                  {idx < progression.length - 1 && <span className="progression-arrow">→</span>}
-                </span>
+                  <span className="key-trigger">{k.trigger}</span>
+                  <span className="key-label">{k.displayName}</span>
+                </div>
               ))}
             </div>
-          )}
-        </div>
-        <div className="progression-controls">
-          <button
-            className={`prog-btn record-btn ${isRecording ? 'recording' : ''}`}
-            onClick={() => {
-              stopPlayback();
-              setIsRecording(true);
-              setStatus('Recording chords...');
-            }}
-          >
-            Record
-          </button>
-          <button
-            className="prog-btn stop-btn"
-            onClick={() => {
-              stopPlayback();
-              setStatus('Stopped');
-            }}
-          >
-            Stop
-          </button>
-          <button
-            className={`prog-btn play-btn ${isPlaying ? 'playing' : ''}`}
-            onClick={() => {
-              if (progression.length > 0) {
-                startPlayback();
-                setStatus('Playing progression...');
-              }
-            }}
-            disabled={progression.length === 0}
-          >
-            Play
-          </button>
-          <button
-            className="prog-btn clear-btn"
-            onClick={() => {
-              clearProgression();
-              setStatus('Progression cleared');
-            }}
-            disabled={progression.length === 0}
-          >
-            Clear
-          </button>
-          <button
-            className={`prog-btn loop-btn ${isLooping ? 'loop-active' : ''}`}
-            onClick={() => {
-              setIsLooping(!isLooping);
-              setStatus(`Loop ${!isLooping ? 'ON' : 'OFF'}`);
-            }}
-          >
-            Loop: {isLooping ? 'ON' : 'OFF'}
-          </button>
-        </div>
-      </section>
+          </section>
 
-      {/* 5.6 PREDEFINED DRUM PATTERNS */}
-      <section className="patterns-section">
-        <h2 className="section-title">Drum Patterns</h2>
-        <div className="patterns-controls-row">
-          <div className="pattern-selector">
-            <button
-              className={`prog-btn ${activePattern === 'Rock' ? 'selected-pattern' : ''}`}
-              onClick={() => {
-                setActivePattern('Rock');
-                setStatus('Rock selected');
-              }}
-            >
-              Rock
-            </button>
-            <button
-              className={`prog-btn ${activePattern === 'Pop' ? 'selected-pattern' : ''}`}
-              onClick={() => {
-                setActivePattern('Pop');
-                setStatus('Pop selected');
-              }}
-            >
-              Pop
-            </button>
-            <button
-              className={`prog-btn ${activePattern === 'Ballad' ? 'selected-pattern' : ''}`}
-              onClick={() => {
-                setActivePattern('Ballad');
-                setStatus('Ballad selected');
-              }}
-            >
-              Ballad
-            </button>
-          </div>
-          <div className="pattern-playback">
-            <button
-              className={`prog-btn play-btn ${isPatternPlaying ? 'playing' : ''}`}
-              onClick={startPatternPlayback}
-            >
-              Play
-            </button>
-            <button
-              className="prog-btn stop-btn"
-              onClick={() => {
-                stopPatternPlayback();
-                setStatus('Pattern stopped');
-              }}
-            >
-              Stop
-            </button>
-          </div>
-        </div>
-        {isPatternPlaying && patternStepIndex !== null && (
-          <div className="pattern-tracker">
-            {Array.from({ length: 8 }).map((_, idx) => (
-              <span
-                key={idx}
-                className={`tracker-dot ${patternStepIndex === idx ? 'active' : ''}`}
+          {/* 5. DRUM KEYBOARD */}
+          <section className="layout-section keyboard-section">
+            <h2 className="section-title">Drum Keyboard</h2>
+            <div className="keyboard-grid">
+              {drumKeys.map((k) => (
+                <div
+                  key={k.trigger}
+                  className={`music-key drum-key ${pressedKeys[k.trigger] ? 'active' : ''}`}
+                  onClick={() => handleDrumSelect(k.trigger)}
+                >
+                  <span className="key-trigger">{k.trigger}</span>
+                  <span className="key-label">{k.display}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {/* 5.5 CHORD PROGRESSION */}
+          <section className="layout-section progression-section">
+            <h2 className="section-title">Chord Progression</h2>
+            <div className="progression-display">
+              {progression.length === 0 ? (
+                <span className="progression-empty">No chords recorded. Press A/S/D/F/G/H/J while Recording.</span>
+              ) : (
+                <div className="progression-steps-list">
+                  {progression.map((chord, idx) => (
+                    <span
+                      key={idx}
+                      className={`progression-step ${playbackIndex === idx ? 'active' : ''}`}
+                    >
+                      {chord.displayName}
+                      {idx < progression.length - 1 && <span className="progression-arrow">→</span>}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="progression-controls">
+              <button
+                className={`prog-btn record-btn ${isRecording ? 'recording' : ''}`}
+                onClick={() => {
+                  stopPlayback();
+                  setIsRecording(true);
+                  setStatus('Recording chords...');
+                }}
               >
-                {idx + 1}
-              </span>
-            ))}
-          </div>
-        )}
-      </section>
+                Record
+              </button>
+              <button
+                className="prog-btn stop-btn"
+                onClick={() => {
+                  stopPlayback();
+                  setStatus('Stopped');
+                }}
+              >
+                Stop
+              </button>
+              <button
+                className={`prog-btn play-btn ${isPlaying ? 'playing' : ''}`}
+                onClick={() => {
+                  if (progression.length > 0) {
+                    startPlayback();
+                    setStatus('Playing progression...');
+                  }
+                }}
+                disabled={progression.length === 0}
+              >
+                Play
+              </button>
+              <button
+                className="prog-btn clear-btn"
+                onClick={() => {
+                  clearProgression();
+                  setStatus('Progression cleared');
+                }}
+                disabled={progression.length === 0}
+              >
+                Clear
+              </button>
+              <button
+                className={`prog-btn loop-btn ${isLooping ? 'loop-active' : ''}`}
+                onClick={() => {
+                  setIsLooping(!isLooping);
+                  setStatus(`Loop ${!isLooping ? 'ON' : 'OFF'}`);
+                }}
+              >
+                Loop: {isLooping ? 'ON' : 'OFF'}
+              </button>
+            </div>
+          </section>
 
-      {/* 6. CONTROLS */}
-      <section className="controls-grid">
-        <div className="control-item">
-          <div className="control-label-row">
-            <span className="control-label">BPM</span>
-            <span className="control-value">{bpm}</span>
-          </div>
-          <input
-            type="range"
-            min="60"
-            max="200"
-            value={bpm}
-            onChange={(e) => setBpm(Number(e.target.value))}
-          />
+          {/* 5.6 PREDEFINED DRUM PATTERNS */}
+          <section className="layout-section patterns-section">
+            <h2 className="section-title">Drum Patterns</h2>
+            <div className="patterns-controls-row">
+              <div className="pattern-selector">
+                <button
+                  className={`prog-btn ${activePattern === 'Rock' ? 'selected-pattern' : ''}`}
+                  onClick={() => {
+                    setActivePattern('Rock');
+                    setStatus('Rock selected');
+                  }}
+                >
+                  Rock
+                </button>
+                <button
+                  className={`prog-btn ${activePattern === 'Pop' ? 'selected-pattern' : ''}`}
+                  onClick={() => {
+                    setActivePattern('Pop');
+                    setStatus('Pop selected');
+                  }}
+                >
+                  Pop
+                </button>
+                <button
+                  className={`prog-btn ${activePattern === 'Ballad' ? 'selected-pattern' : ''}`}
+                  onClick={() => {
+                    setActivePattern('Ballad');
+                    setStatus('Ballad selected');
+                  }}
+                >
+                  Ballad
+                </button>
+              </div>
+              <div className="pattern-playback">
+                <button
+                  className={`prog-btn play-btn ${isPatternPlaying ? 'playing' : ''}`}
+                  onClick={startPatternPlayback}
+                >
+                  Play
+                </button>
+                <button
+                  className="prog-btn stop-btn"
+                  onClick={() => {
+                    stopPatternPlayback();
+                    setStatus('Pattern stopped');
+                  }}
+                >
+                  Stop
+                </button>
+              </div>
+            </div>
+            {isPatternPlaying && patternStepIndex !== null && (
+              <div className="pattern-tracker">
+                {Array.from({ length: 8 }).map((_, idx) => (
+                  <span
+                    key={idx}
+                    className={`tracker-dot ${patternStepIndex === idx ? 'active' : ''}`}
+                  >
+                    {idx + 1}
+                  </span>
+                ))}
+              </div>
+            )}
+          </section>
         </div>
-
-        <div className="control-item">
-          <div className="control-label-row">
-            <span className="control-label">Volume</span>
-            <span className="control-value">{volume}%</span>
-          </div>
-          <input
-            type="range"
-            min="0"
-            max="100"
-            value={volume}
-            onChange={(e) => setVolume(Number(e.target.value))}
-          />
-        </div>
-      </section>
-
-      <div className="actions-row">
-        <button className="reset-btn" onClick={handleReset}>
-          Reset Band
-        </button>
       </div>
-
-      {/* 7. STATUS */}
-      <footer className="status-bar">
-        <span className="status-label">Status</span>
-        <span className="status-value">
-          <span className="status-indicator"></span>
-          {status}
-        </span>
-      </footer>
     </div>
   );
 }
+
+
 
 export default App;
