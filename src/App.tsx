@@ -15,8 +15,8 @@ interface InstrumentState {
 }
 
 // Map root-position notes (e.g. ['C', 'E', 'G']) to the 4th/5th octaves progressively (Piano voicing)
-const getVoicedNotes = (notes: string[]): string[] => {
-  let currentOctave = 4;
+const getVoicedNotes = (notes: string[], octaveOffset: number = 0): string[] => {
+  let currentOctave = 4 + octaveOffset;
   let prevVal = -1;
   const noteValues: Record<string, number> = {
     C: 0, 'C#': 1, D: 2, 'D#': 3, E: 4, F: 5, 'F#': 6, G: 7, 'G#': 8, A: 9, 'A#': 10, B: 11
@@ -33,8 +33,8 @@ const getVoicedNotes = (notes: string[]): string[] => {
 };
 
 // Map root-position notes to the 3rd/4th octaves progressively (Guitar voicing)
-const getGuitarVoicedNotes = (notes: string[]): string[] => {
-  let currentOctave = 3;
+const getGuitarVoicedNotes = (notes: string[], octaveOffset: number = 0): string[] => {
+  let currentOctave = 5 + octaveOffset;
   let prevVal = -1;
   const noteValues: Record<string, number> = {
     C: 0, 'C#': 1, D: 2, 'D#': 3, E: 4, F: 5, 'F#': 6, G: 7, 'G#': 8, A: 9, 'A#': 10, B: 11
@@ -49,6 +49,7 @@ const getGuitarVoicedNotes = (notes: string[]): string[] => {
     return `${note}${currentOctave}`;
   });
 };
+
 function App() {
   // Theme and Beast Mode States
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
@@ -359,15 +360,15 @@ function App() {
 
   const startPlayback = () => {
     if (progression.length === 0) return;
-    
+
     // Stop recording first
     setIsRecording(false);
-    
+
     // Stop any existing playback
     if (playbackTimerRef.current !== null) {
       window.clearTimeout(playbackTimerRef.current);
     }
-    
+
     setIsPlaying(true);
     playNextStep(0);
   };
@@ -462,18 +463,19 @@ function App() {
 
     // Trigger Piano if ON
     if (instruments.piano && pianoSynthRef.current) {
-      const voicedNotes = getVoicedNotes(chord.notes);
+      const voicedNotes = getVoicedNotes(chord.notes, chord.octaveOffset);
       pianoSynthRef.current.triggerAttackRelease(voicedNotes, '2n');
     }
 
     // Trigger Guitar if ON
     if (instruments.guitar && guitarSynthsRef.current.length > 0) {
-      const voicedNotes = getGuitarVoicedNotes(chord.notes);
+      const voicedNotes = getGuitarVoicedNotes(chord.notes, chord.octaveOffset);
       voicedNotes.forEach((note, idx) => {
         const synth = guitarSynthsRef.current[idx % guitarSynthsRef.current.length];
         synth.triggerAttack(note);
       });
     }
+
   }, [initAudio, instruments.piano, instruments.guitar]);
 
   // Drum trigger logic

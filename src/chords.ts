@@ -3,6 +3,7 @@ export interface Chord {
   name: string;
   displayName: string;
   notes: string[];
+  octaveOffset?: number;
 }
 
 export const CHORDS: Chord[] = [
@@ -13,4 +14,6 @@ export const CHORDS: Chord[] = [
   { trigger: 'G', name: 'G Major', displayName: 'G', notes: ['G', 'B', 'D'] },
   { trigger: 'H', name: 'A Minor', displayName: 'Am', notes: ['A', 'C', 'E'] },
   { trigger: 'J', name: 'B Diminished', displayName: 'Bdim', notes: ['B', 'D', 'F'] },
+  { trigger: 'K', name: 'C Major', displayName: 'C', notes: ['C', 'E', 'G'], octaveOffset: 1 }
 ];
+
