@@ -129,53 +129,12 @@ function App() {
     volumeRef.current = volume;
   }, [volume]);
 
-  // Drum Pattern State
-  interface DrumStep {
-    kick: boolean;
-    snare: boolean;
-    hat: boolean;
-  }
-
-  const DRUM_PATTERNS: Record<'Rock' | 'Pop' | 'Ballad', DrumStep[]> = {
-    Rock: [
-      { kick: true, snare: false, hat: true },  // Step 0
-      { kick: false, snare: false, hat: true }, // Step 1
-      { kick: false, snare: true, hat: true },  // Step 2
-      { kick: false, snare: false, hat: true }, // Step 3
-      { kick: true, snare: false, hat: true },  // Step 4
-      { kick: false, snare: false, hat: true }, // Step 5
-      { kick: false, snare: true, hat: true },  // Step 6
-      { kick: false, snare: false, hat: true }, // Step 7
-    ],
-    Pop: [
-      { kick: true, snare: false, hat: true },  // Step 0
-      { kick: false, snare: false, hat: true }, // Step 1
-      { kick: false, snare: true, hat: true },  // Step 2
-      { kick: true, snare: false, hat: true },  // Step 3
-      { kick: true, snare: false, hat: true },  // Step 4
-      { kick: false, snare: false, hat: true }, // Step 5
-      { kick: false, snare: true, hat: true },  // Step 6
-      { kick: false, snare: false, hat: true }, // Step 7
-    ],
-    Ballad: [
-      { kick: true, snare: false, hat: true },  // Step 0
-      { kick: false, snare: false, hat: true }, // Step 1
-      { kick: false, snare: false, hat: true }, // Step 2
-      { kick: false, snare: false, hat: true }, // Step 3
-      { kick: false, snare: true, hat: true },  // Step 4
-      { kick: false, snare: false, hat: true }, // Step 5
-      { kick: false, snare: false, hat: true }, // Step 6
-      { kick: false, snare: false, hat: true }, // Step 7
-    ],
-  };
-
   const [activePattern, setActivePattern] = useState<'Rock' | 'Pop' | 'Ballad'>('Rock');
   const [isPatternPlaying, setIsPatternPlaying] = useState<boolean>(false);
   const [patternStepIndex, setPatternStepIndex] = useState<number | null>(null);
 
   const isPatternPlayingRef = useRef<boolean>(false);
   const activePatternRef = useRef<'Rock' | 'Pop' | 'Ballad'>('Rock');
-  const patternTimerRef = useRef<number | null>(null);
 
   // Sync refs with state changes
   useEffect(() => {
@@ -184,23 +143,36 @@ function App() {
 
   useEffect(() => {
     activePatternRef.current = activePattern;
+    if (isPatternPlaying) {
+      startPatternPlayback();
+    }
   }, [activePattern]);
 
-  // Clean up timers on unmount
+  useEffect(() => {
+    if (!instruments.drums && isPatternPlaying) {
+      stopPatternPlayback();
+    }
+  }, [instruments.drums, isPatternPlaying]);
+
+  // Clean up timers and audio nodes on unmount
   useEffect(() => {
     return () => {
       if (playbackTimerRef.current !== null) {
         window.clearTimeout(playbackTimerRef.current);
       }
-      if (patternTimerRef.current !== null) {
-        window.clearTimeout(patternTimerRef.current);
+      if (guitarSamplerRef.current) {
+        guitarSamplerRef.current.dispose();
+      }
+      if (drumPatternPlayerRef.current) {
+        drumPatternPlayerRef.current.dispose();
       }
     };
   }, []);
 
   // Audio nodes refs
   const pianoSynthRef = useRef<Tone.PolySynth | null>(null);
-  const guitarSynthsRef = useRef<Tone.PluckSynth[]>([]);
+  const guitarSamplerRef = useRef<Tone.Sampler | null>(null);
+  const drumPatternPlayerRef = useRef<Tone.Player | null>(null);
   const kickSynthRef = useRef<Tone.MembraneSynth | null>(null);
   const snareSynthRef = useRef<Tone.NoiseSynth | null>(null);
   const hihatSynthRef = useRef<Tone.NoiseSynth | null>(null);
@@ -247,15 +219,49 @@ function App() {
       pianoSynthRef.current = pianoSynth;
     }
 
-    if (guitarSynthsRef.current.length === 0) {
-      // Create a pool of PluckSynth instances representing individual guitar strings
-      guitarSynthsRef.current = Array.from({ length: 6 }, () =>
-        new Tone.PluckSynth({
-          attackNoise: 0.8,
-          dampening: 3000,
-          resonance: 0.96,
-        }).connect(volNode)
-      );
+    if (!guitarSamplerRef.current) {
+      guitarSamplerRef.current = new Tone.Sampler({
+        urls: {
+          'F4': 'F4.mp3',
+          'F#2': 'Fs2.mp3',
+          'F#3': 'Fs3.mp3',
+          'F#4': 'Fs4.mp3',
+          'G2': 'G2.mp3',
+          'G3': 'G3.mp3',
+          'G4': 'G4.mp3',
+          'G#2': 'Gs2.mp3',
+          'G#3': 'Gs3.mp3',
+          'G#4': 'Gs4.mp3',
+          'A2': 'A2.mp3',
+          'A3': 'A3.mp3',
+          'A4': 'A4.mp3',
+          'A#2': 'As2.mp3',
+          'A#3': 'As3.mp3',
+          'A#4': 'As4.mp3',
+          'B2': 'B2.mp3',
+          'B3': 'B3.mp3',
+          'B4': 'B4.mp3',
+          'C3': 'C3.mp3',
+          'C4': 'C4.mp3',
+          'C5': 'C5.mp3',
+          'C#3': 'Cs3.mp3',
+          'C#4': 'Cs4.mp3',
+          'C#5': 'Cs5.mp3',
+          'D2': 'D2.mp3',
+          'D3': 'D3.mp3',
+          'D4': 'D4.mp3',
+          'D5': 'D5.mp3',
+          'D#2': 'Ds2.mp3',
+          'D#3': 'Ds3.mp3',
+          'D#4': 'Ds3.mp3',
+          'E2': 'E2.mp3',
+          'E3': 'E3.mp3',
+          'E4': 'E4.mp3',
+          'F2': 'F2.mp3',
+          'F3': 'F3.mp3'
+        },
+        baseUrl: 'https://nbrosowsky.github.io/tonejs-instruments/samples/guitar-acoustic/',
+      }).connect(volNode);
     }
 
     if (!kickSynthRef.current) {
@@ -304,6 +310,12 @@ function App() {
           decay: 0.3,
           sustain: 0,
         },
+      }).connect(volNode);
+    }
+
+    if (!drumPatternPlayerRef.current) {
+      drumPatternPlayerRef.current = new Tone.Player({
+        loop: true,
       }).connect(volNode);
     }
   }, []);
@@ -388,51 +400,41 @@ function App() {
     setProgression([]);
   };
 
-  const playPatternStep = (stepIndex: number) => {
-    if (!isPatternPlayingRef.current) return;
-
-    const pattern = DRUM_PATTERNS[activePatternRef.current];
-    const step = pattern[stepIndex % 8];
-
-    // Trigger sounds if Drums toggle is ON
-    if (instruments.drums) {
-      if (step.kick && kickSynthRef.current) {
-        kickSynthRef.current.triggerAttackRelease('C1', '8n');
-      }
-      if (step.snare && snareSynthRef.current) {
-        snareSynthRef.current.triggerAttackRelease('16n');
-      }
-      if (step.hat && hihatSynthRef.current) {
-        hihatSynthRef.current.triggerAttackRelease('32n');
-      }
-    }
-
-    setPatternStepIndex(stepIndex % 8);
-
-    // Each step is an eighth note: (60 / BPM) * 1000 / 2 = 30000 / BPM
-    const stepDurationMs = 30000 / bpmRef.current;
-    patternTimerRef.current = window.setTimeout(() => {
-      playPatternStep(stepIndex + 1);
-    }, stepDurationMs);
-  };
-
   const startPatternPlayback = async () => {
     await initAudio();
-    if (patternTimerRef.current !== null) {
-      window.clearTimeout(patternTimerRef.current);
+    if (!instruments.drums || !drumPatternPlayerRef.current) return;
+
+    if (drumPatternPlayerRef.current.state === 'started') {
+      drumPatternPlayerRef.current.stop();
     }
+
+    const fileMap: Record<'Rock' | 'Pop' | 'Ballad', string> = {
+      Rock: '/audio/drum-patterns/rock.mp3',
+      Pop: '/audio/drum-patterns/pop.mp3',
+      Ballad: '/audio/drum-patterns/ballad.mp3',
+    };
+
+    const filePath = fileMap[activePatternRef.current];
+
     setIsPatternPlaying(true);
     isPatternPlayingRef.current = true;
-    playPatternStep(0);
+
+    try {
+      await drumPatternPlayerRef.current.load(filePath);
+      if (isPatternPlayingRef.current && instruments.drums) {
+        drumPatternPlayerRef.current.start();
+      }
+    } catch (err) {
+      console.error('Failed to load drum pattern track:', err);
+    }
   };
 
   const stopPatternPlayback = () => {
     setIsPatternPlaying(false);
     isPatternPlayingRef.current = false;
     setPatternStepIndex(null);
-    if (patternTimerRef.current !== null) {
-      window.clearTimeout(patternTimerRef.current);
-      patternTimerRef.current = null;
+    if (drumPatternPlayerRef.current) {
+      drumPatternPlayerRef.current.stop();
     }
   };
 
@@ -468,11 +470,12 @@ function App() {
     }
 
     // Trigger Guitar if ON
-    if (instruments.guitar && guitarSynthsRef.current.length > 0) {
+    if (instruments.guitar && guitarSamplerRef.current) {
       const voicedNotes = getGuitarVoicedNotes(chord.notes, chord.octaveOffset);
+      const now = Tone.now();
       voicedNotes.forEach((note, idx) => {
-        const synth = guitarSynthsRef.current[idx % guitarSynthsRef.current.length];
-        synth.triggerAttack(note);
+        const timeOffset = idx * 0.03; // Staggered by 30ms for a downstrum effect
+        guitarSamplerRef.current?.triggerAttack(note, now + timeOffset);
       });
     }
 
