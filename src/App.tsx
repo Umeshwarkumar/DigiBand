@@ -14,6 +14,20 @@ interface InstrumentState {
   drums: boolean;
 }
 
+export type RecordedEvent = {
+  type: 'chord' | 'drum';
+  instrument: 'piano' | 'guitar' | 'drums';
+  chord?: Chord;
+  drumKey?: string;
+  time: number;
+};
+
+export type RecordingLayer = {
+  id: number;
+  duration: number;
+  events: RecordedEvent[];
+};
+
 // Map root-position notes (e.g. ['C', 'E', 'G']) to the 4th/5th octaves progressively (Piano voicing)
 const getVoicedNotes = (notes: string[], octaveOffset: number = 0): string[] => {
   let currentOctave = 4 + octaveOffset;
@@ -87,27 +101,31 @@ function App() {
   const [bpm, setBpm] = useState<number>(100);
   const [volume, setVolume] = useState<number>(70);
 
-  // Progression State
-  const [progression, setProgression] = useState<Chord[]>([]);
+  // Recording Layers State
+  const [recordingLayers, setRecordingLayers] = useState<RecordingLayer[]>([]);
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isLooping, setIsLooping] = useState<boolean>(false);
-  const [playbackIndex, setPlaybackIndex] = useState<number | null>(null);
+
+  // Metronome State
+  const [metronomeEnabled, setMetronomeEnabled] = useState<boolean>(false);
 
   // Keep references to avoid stale closures in setTimeout recursion
-  const progressionRef = useRef<Chord[]>([]);
+  const recordingLayersRef = useRef<RecordingLayer[]>([]);
+  const activeLayerEventsRef = useRef<RecordedEvent[]>([]);
+  const recordingStartTimeRef = useRef<number>(0);
+  
   const isRecordingRef = useRef<boolean>(false);
   const isPlayingRef = useRef<boolean>(false);
   const isLoopingRef = useRef<boolean>(false);
   const bpmRef = useRef<number>(100);
-  const playbackTimerRef = useRef<number | null>(null);
 
   const volumeRef = useRef<number>(70);
 
   // Sync refs with state changes
   useEffect(() => {
-    progressionRef.current = progression;
-  }, [progression]);
+    recordingLayersRef.current = recordingLayers;
+  }, [recordingLayers]);
 
   useEffect(() => {
     isRecordingRef.current = isRecording;
@@ -123,6 +141,7 @@ function App() {
 
   useEffect(() => {
     bpmRef.current = bpm;
+    Tone.Transport.bpm.value = bpm;
   }, [bpm]);
 
   useEffect(() => {
@@ -157,15 +176,26 @@ function App() {
   // Clean up timers and audio nodes on unmount
   useEffect(() => {
     return () => {
-      if (playbackTimerRef.current !== null) {
-        window.clearTimeout(playbackTimerRef.current);
-      }
+      Tone.Transport.cancel(0);
       if (guitarSamplerRef.current) {
         guitarSamplerRef.current.dispose();
       }
       if (drumPatternPlayerRef.current) {
         drumPatternPlayerRef.current.dispose();
       }
+      if (metronomeLoopRef.current) {
+        metronomeLoopRef.current.dispose();
+      }
+      if (metronomeFilterRef.current) {
+        metronomeFilterRef.current.dispose();
+      }
+      if (metronomeSynthRef.current) {
+        metronomeSynthRef.current.dispose();
+      }
+      if (drumBusRef.current) {
+        drumBusRef.current.dispose();
+      }
+      Tone.Transport.stop();
     };
   }, []);
 
@@ -179,6 +209,11 @@ function App() {
   const openHihatSynthRef = useRef<Tone.NoiseSynth | null>(null);
   const volumeNodeRef = useRef<Tone.Volume | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
+  const metronomeSynthRef = useRef<Tone.NoiseSynth | null>(null);
+  const metronomeFilterRef = useRef<Tone.Filter | null>(null);
+  const metronomeBeatRef = useRef<number>(0);
+  const metronomeLoopRef = useRef<Tone.Loop | null>(null);
+  const drumBusRef = useRef<Tone.Channel | null>(null);
 
   // Initialize Tone.js audio engine on user interaction
   const initAudio = useCallback(async () => {
@@ -211,12 +246,48 @@ function App() {
         envelope: {
           attack: 0.02,
           decay: 1.2,
-          sustain: 0.1,
+          sustain: 0.9,
           release: 0.8,
         },
       }).connect(volNode);
 
       pianoSynthRef.current = pianoSynth;
+    }
+
+    if (!drumBusRef.current) {
+      // Drum Bus with Compressor and EQ for punch
+      const drumCompressor = new Tone.Compressor({
+        threshold: -12,
+        ratio: 4,
+        attack: 0.01,
+        release: 0.1
+      }).connect(volNode);
+
+      const drumEQ = new Tone.EQ3({
+        low: 4,
+        mid: 1,
+        high: 2
+      }).connect(drumCompressor);
+
+      drumBusRef.current = new Tone.Channel({ volume: 4 }).connect(drumEQ);
+    }
+
+    if (!metronomeSynthRef.current) {
+      metronomeFilterRef.current = new Tone.Filter({
+        type: 'bandpass',
+        frequency: 2000,
+        Q: 1
+      }).connect(volNode);
+
+      metronomeSynthRef.current = new Tone.NoiseSynth({
+        noise: { type: 'pink' },
+        envelope: {
+          sustain: 0,
+          attack: 0.001,
+          decay: 0.02,
+        },
+        volume: 20// highly audible
+      }).connect(metronomeFilterRef.current);
     }
 
     if (!guitarSamplerRef.current) {
@@ -266,12 +337,17 @@ function App() {
 
     if (!kickSynthRef.current) {
       kickSynthRef.current = new Tone.MembraneSynth({
+        pitchDecay: 0.05,
+        octaves: 4,
+        oscillator: { type: 'sine' },
         envelope: {
           sustain: 0,
-          attack: 0.02,
-          decay: 0.8,
+          attack: 0.001, // Faster attack for punch
+          decay: 0.4,
+          release: 0.4
         },
-      }).connect(volNode);
+        volume: 40 // Heavy boost for kick volume
+      }).connect(drumBusRef.current);
     }
 
     if (!snareSynthRef.current) {
@@ -280,11 +356,12 @@ function App() {
           type: 'white',
         },
         envelope: {
-          attack: 0.005,
-          decay: 0.2,
+          attack: 0.001,
+          decay: 0.25,
           sustain: 0,
         },
-      }).connect(volNode);
+        volume: 5 // Boost snare
+      }).connect(drumBusRef.current);
     }
 
     if (!hihatSynthRef.current) {
@@ -293,11 +370,12 @@ function App() {
           type: 'pink',
         },
         envelope: {
-          attack: 0.005,
+          attack: 0.001,
           decay: 0.05,
           sustain: 0,
         },
-      }).connect(volNode);
+        volume: 25 // Noticeable boost for closed hi-hat
+      }).connect(drumBusRef.current);
     }
 
     if (!openHihatSynthRef.current) {
@@ -310,13 +388,14 @@ function App() {
           decay: 0.3,
           sustain: 0,
         },
-      }).connect(volNode);
+        volume: 20 // Noticeable boost for open hi-hat
+      }).connect(drumBusRef.current);
     }
 
     if (!drumPatternPlayerRef.current) {
       drumPatternPlayerRef.current = new Tone.Player({
         loop: true,
-      }).connect(volNode);
+      }).connect(drumBusRef.current);
     }
   }, []);
 
@@ -326,6 +405,49 @@ function App() {
       volumeNodeRef.current.volume.value = Tone.gainToDb(volume / 100);
     }
   }, [volume]);
+
+  const toggleMetronome = async () => {
+    await initAudio();
+    setMetronomeEnabled((prev) => !prev);
+  };
+
+  useEffect(() => {
+    const synth = metronomeSynthRef.current;
+    if (!synth) return;
+
+    if (metronomeEnabled) {
+      if (Tone.context.state !== 'running') {
+        Tone.start();
+      }
+
+      if (!metronomeLoopRef.current) {
+        metronomeLoopRef.current = new Tone.Loop((time) => {
+          const isFirstBeat = metronomeBeatRef.current % 4 === 0;
+
+          if (metronomeFilterRef.current) {
+            metronomeFilterRef.current.frequency.setValueAtTime(isFirstBeat ? 1500 : 2500, time);
+            metronomeFilterRef.current.Q.setValueAtTime(isFirstBeat ? 2 : 1, time);
+          }
+
+          synth.volume.setValueAtTime(isFirstBeat ? 16 : 10, time);
+          synth.triggerAttackRelease('32n', time);
+
+          metronomeBeatRef.current++;
+        }, '4n');
+      }
+
+      metronomeBeatRef.current = 0; // Reset beat count on start
+      metronomeLoopRef.current.start(0);
+
+      if (Tone.Transport.state !== 'started') {
+        Tone.Transport.start();
+      }
+    } else {
+      if (metronomeLoopRef.current) {
+        metronomeLoopRef.current.stop();
+      }
+    }
+  }, [metronomeEnabled]);
 
   const toggleInstrument = useCallback((key: keyof InstrumentState) => {
     setInstruments((prev) => {
@@ -343,61 +465,66 @@ function App() {
     });
   }, []);
 
-  const playNextStep = (index: number) => {
-    const prog = progressionRef.current;
-    if (prog.length === 0) {
-      setIsPlaying(false);
-      setPlaybackIndex(null);
-      return;
+  const stopRecording = () => {
+    if (!isRecordingRef.current) return;
+    setIsRecording(false);
+    
+    const duration = Tone.now() - recordingStartTimeRef.current;
+    if (activeLayerEventsRef.current.length > 0) {
+      const newLayer: RecordingLayer = {
+        id: Date.now(),
+        duration,
+        events: [...activeLayerEventsRef.current]
+      };
+      setRecordingLayers(prev => [...prev, newLayer]);
     }
-
-    if (index >= prog.length) {
-      if (isLoopingRef.current) {
-        index = 0;
-      } else {
-        setIsPlaying(false);
-        setPlaybackIndex(null);
-        return;
-      }
-    }
-
-    setPlaybackIndex(index);
-    handleChordSelect(prog[index], true);
-
-    const intervalMs = (60 / bpmRef.current) * 1000;
-    playbackTimerRef.current = window.setTimeout(() => {
-      playNextStep(index + 1);
-    }, intervalMs);
+    activeLayerEventsRef.current = [];
   };
 
   const startPlayback = () => {
-    if (progression.length === 0) return;
+    if (recordingLayersRef.current.length === 0) return;
 
-    // Stop recording first
-    setIsRecording(false);
-
-    // Stop any existing playback
-    if (playbackTimerRef.current !== null) {
-      window.clearTimeout(playbackTimerRef.current);
+    if (isRecording) {
+      stopRecording();
     }
 
+    Tone.Transport.cancel(0);
     setIsPlaying(true);
-    playNextStep(0);
+
+    // Make sure Tone is started
+    if (Tone.context.state !== 'running') {
+      Tone.start();
+    }
+
+    recordingLayersRef.current.forEach(layer => {
+      layer.events.forEach(event => {
+        Tone.Transport.schedule((time) => {
+          if (event.type === 'chord' && event.chord) {
+            handleChordSelect(event.chord, true, event.instrument as 'piano' | 'guitar', time);
+          } else if (event.type === 'drum' && event.drumKey) {
+            handleDrumSelect(event.drumKey, true, time);
+          }
+        }, event.time);
+      });
+    });
+
+    Tone.Transport.position = 0;
+    if (Tone.Transport.state !== 'started') {
+      Tone.Transport.start();
+    }
   };
 
   const stopPlayback = () => {
     setIsPlaying(false);
-    setIsRecording(false);
-    setPlaybackIndex(null);
-    if (playbackTimerRef.current !== null) {
-      window.clearTimeout(playbackTimerRef.current);
-      playbackTimerRef.current = null;
-    }
+    Tone.Transport.stop();
+    Tone.Transport.cancel(0);
   };
 
-  const clearProgression = () => {
+  const clearRecording = () => {
     stopPlayback();
-    setProgression([]);
+    if (isRecording) stopRecording();
+    setRecordingLayers([]);
+    activeLayerEventsRef.current = [];
   };
 
   const startPatternPlayback = async () => {
@@ -440,8 +567,10 @@ function App() {
 
   const handleReset = () => {
     stopPlayback();
+    if (isRecording) stopRecording();
     stopPatternPlayback();
-    setProgression([]);
+    setRecordingLayers([]);
+    activeLayerEventsRef.current = [];
     setCurrentChord(CHORDS[0]);
     setBpm(100);
     setVolume(70);
@@ -450,54 +579,92 @@ function App() {
       guitar: true,
       drums: true,
     });
+    setMetronomeEnabled(false);
     setStatus('Ready');
   };
 
   // Chord selection logic
-  const handleChordSelect = useCallback(async (chord: Chord, fromPlayback: boolean = false) => {
-    await initAudio();
-    setCurrentChord(chord);
-    setStatus(`${chord.name} selected`);
+  const handleChordSelect = useCallback(async (chord: Chord, fromPlayback: boolean = false, overrideInstrument?: 'piano' | 'guitar', scheduledTime?: number) => {
+    if (!fromPlayback) await initAudio();
+    if (!fromPlayback) {
+      setCurrentChord(chord);
+      setStatus(`${chord.name} selected`);
+    }
 
     if (isRecordingRef.current && !fromPlayback) {
-      setProgression((prev) => [...prev, chord]);
+      const time = Tone.now() - recordingStartTimeRef.current;
+      if (instruments.piano) {
+        activeLayerEventsRef.current.push({ type: 'chord', instrument: 'piano', chord, time });
+      }
+      if (instruments.guitar) {
+        activeLayerEventsRef.current.push({ type: 'chord', instrument: 'guitar', chord, time });
+      }
     }
 
-    // Trigger Piano if ON
-    if (instruments.piano && pianoSynthRef.current) {
-      const voicedNotes = getVoicedNotes(chord.notes, chord.octaveOffset);
-      pianoSynthRef.current.triggerAttackRelease(voicedNotes, '2n');
+    // Trigger Piano
+    if ((!fromPlayback && instruments.piano) || (fromPlayback && overrideInstrument === 'piano')) {
+      if (pianoSynthRef.current) {
+        const voicedNotes = getVoicedNotes(chord.notes, chord.octaveOffset);
+        if (scheduledTime !== undefined) {
+          pianoSynthRef.current.triggerAttackRelease(voicedNotes, '2n', scheduledTime);
+        } else {
+          pianoSynthRef.current.triggerAttackRelease(voicedNotes, '2n');
+        }
+      }
     }
 
-    // Trigger Guitar if ON
-    if (instruments.guitar && guitarSamplerRef.current) {
-      const voicedNotes = getGuitarVoicedNotes(chord.notes, chord.octaveOffset);
-      const now = Tone.now();
-      voicedNotes.forEach((note, idx) => {
-        const timeOffset = idx * 0.03; // Staggered by 30ms for a downstrum effect
-        guitarSamplerRef.current?.triggerAttack(note, now + timeOffset);
-      });
+    // Trigger Guitar
+    if ((!fromPlayback && instruments.guitar) || (fromPlayback && overrideInstrument === 'guitar')) {
+      if (guitarSamplerRef.current) {
+        const voicedNotes = getGuitarVoicedNotes(chord.notes, chord.octaveOffset);
+        const baseTime = scheduledTime !== undefined ? scheduledTime : Tone.now();
+        voicedNotes.forEach((note, idx) => {
+          const timeOffset = idx * 0.03;
+          guitarSamplerRef.current?.triggerAttack(note, baseTime + timeOffset);
+        });
+      }
     }
 
   }, [initAudio, instruments.piano, instruments.guitar]);
 
   // Drum trigger logic
-  const handleDrumSelect = useCallback(async (drumKey: string) => {
-    await initAudio();
-    if (!instruments.drums) return;
+  const handleDrumSelect = useCallback(async (drumKey: string, fromPlayback: boolean = false, scheduledTime?: number) => {
+    if (!fromPlayback) await initAudio();
+    if (!fromPlayback && !instruments.drums) return;
+
+    if (isRecordingRef.current && !fromPlayback) {
+      const time = Tone.now() - recordingStartTimeRef.current;
+      activeLayerEventsRef.current.push({ type: 'drum', instrument: 'drums', drumKey, time });
+    }
 
     if (drumKey === 'Z' && kickSynthRef.current) {
-      kickSynthRef.current.triggerAttackRelease('C1', '8n');
-      setStatus('Kick played');
+      if (scheduledTime !== undefined) {
+        kickSynthRef.current.triggerAttackRelease('C1', '8n', scheduledTime);
+      } else {
+        kickSynthRef.current.triggerAttackRelease('C1', '8n');
+      }
+      if (!fromPlayback) setStatus('Kick played');
     } else if (drumKey === 'X' && snareSynthRef.current) {
-      snareSynthRef.current.triggerAttackRelease('16n');
-      setStatus('Snare played');
+      if (scheduledTime !== undefined) {
+        snareSynthRef.current.triggerAttackRelease('16n', scheduledTime);
+      } else {
+        snareSynthRef.current.triggerAttackRelease('16n');
+      }
+      if (!fromPlayback) setStatus('Snare played');
     } else if (drumKey === 'C' && hihatSynthRef.current) {
-      hihatSynthRef.current.triggerAttackRelease('32n');
-      setStatus('Closed Hi-Hat played');
+      if (scheduledTime !== undefined) {
+        hihatSynthRef.current.triggerAttackRelease('32n', scheduledTime);
+      } else {
+        hihatSynthRef.current.triggerAttackRelease('32n');
+      }
+      if (!fromPlayback) setStatus('Closed Hi-Hat played');
     } else if (drumKey === 'V' && openHihatSynthRef.current) {
-      openHihatSynthRef.current.triggerAttackRelease('8n');
-      setStatus('Open Hi-Hat played');
+      if (scheduledTime !== undefined) {
+        openHihatSynthRef.current.triggerAttackRelease('8n', scheduledTime);
+      } else {
+        openHihatSynthRef.current.triggerAttackRelease('8n');
+      }
+      if (!fromPlayback) setStatus('Open Hi-Hat played');
     }
   }, [initAudio, instruments.drums]);
 
@@ -672,6 +839,16 @@ function App() {
                 value={bpm}
                 onChange={(e) => setBpm(Number(e.target.value))}
               />
+              <div className="control-label-row" style={{ marginTop: '15px' }}>
+                <span className="control-label">Metronome</span>
+                <div
+                  className={`metronome-toggle ${metronomeEnabled ? 'active' : ''}`}
+                  onClick={toggleMetronome}
+                >
+                  <span className="metronome-toggle-text">{metronomeEnabled ? 'ON' : 'OFF'}</span>
+                  <div className="metronome-toggle-switch"></div>
+                </div>
+              </div>
             </div>
 
             <div className="control-item">
@@ -740,40 +917,50 @@ function App() {
             </div>
           </section>
 
-          {/* 5.5 CHORD PROGRESSION */}
+          {/* 5.5 RECORDING LAYERS */}
           <section className="layout-section progression-section">
-            <h2 className="section-title">Chord Progression</h2>
+            <h2 className="section-title">Recording Layers</h2>
             <div className="progression-display">
-              {progression.length === 0 ? (
-                <span className="progression-empty">No chords recorded. Press A/S/D/F/G/H/J while Recording.</span>
+              {recordingLayers.length === 0 && !isRecording ? (
+                <span className="progression-empty">No layers recorded. Press Record to start.</span>
               ) : (
                 <div className="progression-steps-list">
-                  {progression.map((chord, idx) => (
-                    <span
-                      key={idx}
-                      className={`progression-step ${playbackIndex === idx ? 'active' : ''}`}
-                    >
-                      {chord.displayName}
-                      {idx < progression.length - 1 && <span className="progression-arrow">→</span>}
+                  {recordingLayers.map((layer, idx) => (
+                    <span key={layer.id} className="progression-step active">
+                      Layer {idx + 1} ({layer.events.length} events)
                     </span>
                   ))}
+                  {isRecording && (
+                    <span className="progression-step active" style={{ animation: 'pulse 1.5s infinite' }}>
+                      Recording Layer {recordingLayers.length + 1}...
+                    </span>
+                  )}
                 </div>
               )}
             </div>
             <div className="progression-controls">
               <button
                 className={`prog-btn record-btn ${isRecording ? 'recording' : ''}`}
-                onClick={() => {
-                  stopPlayback();
-                  setIsRecording(true);
-                  setStatus('Recording chords...');
+                onClick={async () => {
+                  if (isRecording) {
+                    stopRecording();
+                    setStatus('Recording stopped');
+                  } else {
+                    stopPlayback();
+                    await initAudio();
+                    if (Tone.context.state !== 'running') await Tone.start();
+                    recordingStartTimeRef.current = Tone.now();
+                    setIsRecording(true);
+                    setStatus('Recording new layer...');
+                  }
                 }}
               >
-                Record
+                {isRecording ? 'STOP RECORDING' : 'RECORD'}
               </button>
               <button
                 className="prog-btn stop-btn"
                 onClick={() => {
+                  if (isRecording) stopRecording();
                   stopPlayback();
                   setStatus('Stopped');
                 }}
@@ -783,22 +970,22 @@ function App() {
               <button
                 className={`prog-btn play-btn ${isPlaying ? 'playing' : ''}`}
                 onClick={() => {
-                  if (progression.length > 0) {
+                  if (recordingLayers.length > 0) {
                     startPlayback();
-                    setStatus('Playing progression...');
+                    setStatus('Playing layers...');
                   }
                 }}
-                disabled={progression.length === 0}
+                disabled={recordingLayers.length === 0}
               >
                 Play
               </button>
               <button
                 className="prog-btn clear-btn"
                 onClick={() => {
-                  clearProgression();
-                  setStatus('Progression cleared');
+                  clearRecording();
+                  setStatus('Recordings cleared');
                 }}
-                disabled={progression.length === 0}
+                disabled={recordingLayers.length === 0 && !isRecording}
               >
                 Clear
               </button>
