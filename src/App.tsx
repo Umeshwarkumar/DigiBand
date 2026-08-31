@@ -109,12 +109,14 @@ function App() {
 
   // Metronome State
   const [metronomeEnabled, setMetronomeEnabled] = useState<boolean>(false);
+  const metronomeEnabledRef = useRef<boolean>(false);
+  const playbackEventIdsRef = useRef<number[]>([]);
 
   // Keep references to avoid stale closures in setTimeout recursion
   const recordingLayersRef = useRef<RecordingLayer[]>([]);
   const activeLayerEventsRef = useRef<RecordedEvent[]>([]);
   const recordingStartTimeRef = useRef<number>(0);
-  
+
   const isRecordingRef = useRef<boolean>(false);
   const isPlayingRef = useRef<boolean>(false);
   const isLoopingRef = useRef<boolean>(false);
@@ -138,6 +140,10 @@ function App() {
   useEffect(() => {
     isLoopingRef.current = isLooping;
   }, [isLooping]);
+
+  useEffect(() => {
+    metronomeEnabledRef.current = metronomeEnabled;
+  }, [metronomeEnabled]);
 
   useEffect(() => {
     bpmRef.current = bpm;
@@ -244,10 +250,10 @@ function App() {
           type: 'triangle',
         },
         envelope: {
-          attack: 0.02,
-          decay: 1.2,
-          sustain: 0.9,
-          release: 0.8,
+          attack: 0.0000005,
+          decay: 0.3,
+          sustain: 0.4,
+          release: 0.2,
         },
       }).connect(volNode);
 
@@ -468,7 +474,7 @@ function App() {
   const stopRecording = () => {
     if (!isRecordingRef.current) return;
     setIsRecording(false);
-    
+
     const duration = Tone.now() - recordingStartTimeRef.current;
     if (activeLayerEventsRef.current.length > 0) {
       const newLayer: RecordingLayer = {
@@ -488,7 +494,8 @@ function App() {
       stopRecording();
     }
 
-    Tone.Transport.cancel(0);
+    playbackEventIdsRef.current.forEach(id => Tone.Transport.clear(id));
+    playbackEventIdsRef.current = [];
     setIsPlaying(true);
 
     // Make sure Tone is started
@@ -498,13 +505,14 @@ function App() {
 
     recordingLayersRef.current.forEach(layer => {
       layer.events.forEach(event => {
-        Tone.Transport.schedule((time) => {
+        const id = Tone.Transport.schedule((time) => {
           if (event.type === 'chord' && event.chord) {
             handleChordSelect(event.chord, true, event.instrument as 'piano' | 'guitar', time);
           } else if (event.type === 'drum' && event.drumKey) {
             handleDrumSelect(event.drumKey, true, time);
           }
         }, event.time);
+        playbackEventIdsRef.current.push(id);
       });
     });
 
@@ -516,8 +524,12 @@ function App() {
 
   const stopPlayback = () => {
     setIsPlaying(false);
-    Tone.Transport.stop();
-    Tone.Transport.cancel(0);
+    playbackEventIdsRef.current.forEach(id => Tone.Transport.clear(id));
+    playbackEventIdsRef.current = [];
+    if (!metronomeEnabledRef.current) {
+      Tone.Transport.stop();
+      Tone.Transport.position = 0;
+    }
   };
 
   const clearRecording = () => {
@@ -585,14 +597,34 @@ function App() {
 
   // Chord selection logic
   const handleChordSelect = useCallback(async (chord: Chord, fromPlayback: boolean = false, overrideInstrument?: 'piano' | 'guitar', scheduledTime?: number) => {
-    if (!fromPlayback) await initAudio();
-    if (!fromPlayback) {
-      setCurrentChord(chord);
-      setStatus(`${chord.name} selected`);
+    if (!fromPlayback && (!pianoSynthRef.current || Tone.context.state !== 'running')) {
+      await initAudio();
     }
 
+    const playTime = scheduledTime !== undefined ? scheduledTime : Tone.now();
+
+    // Trigger Piano
+    if ((!fromPlayback && instruments.piano) || (fromPlayback && overrideInstrument === 'piano')) {
+      if (pianoSynthRef.current) {
+        const voicedNotes = getVoicedNotes(chord.notes, chord.octaveOffset);
+        pianoSynthRef.current.triggerAttackRelease(voicedNotes, '2n', playTime);
+      }
+    }
+
+    // Trigger Guitar
+    if ((!fromPlayback && instruments.guitar) || (fromPlayback && overrideInstrument === 'guitar')) {
+      if (guitarSamplerRef.current) {
+        const voicedNotes = getGuitarVoicedNotes(chord.notes, chord.octaveOffset);
+        voicedNotes.forEach((note, idx) => {
+          const timeOffset = idx * 0.03;
+          guitarSamplerRef.current?.triggerAttack(note, playTime + timeOffset);
+        });
+      }
+    }
+
+    // Record Event
     if (isRecordingRef.current && !fromPlayback) {
-      const time = Tone.now() - recordingStartTimeRef.current;
+      const time = playTime - recordingStartTimeRef.current;
       if (instruments.piano) {
         activeLayerEventsRef.current.push({ type: 'chord', instrument: 'piano', chord, time });
       }
@@ -601,91 +633,64 @@ function App() {
       }
     }
 
-    // Trigger Piano
-    if ((!fromPlayback && instruments.piano) || (fromPlayback && overrideInstrument === 'piano')) {
-      if (pianoSynthRef.current) {
-        const voicedNotes = getVoicedNotes(chord.notes, chord.octaveOffset);
-        if (scheduledTime !== undefined) {
-          pianoSynthRef.current.triggerAttackRelease(voicedNotes, '2n', scheduledTime);
-        } else {
-          pianoSynthRef.current.triggerAttackRelease(voicedNotes, '2n');
-        }
-      }
-    }
-
-    // Trigger Guitar
-    if ((!fromPlayback && instruments.guitar) || (fromPlayback && overrideInstrument === 'guitar')) {
-      if (guitarSamplerRef.current) {
-        const voicedNotes = getGuitarVoicedNotes(chord.notes, chord.octaveOffset);
-        const baseTime = scheduledTime !== undefined ? scheduledTime : Tone.now();
-        voicedNotes.forEach((note, idx) => {
-          const timeOffset = idx * 0.03;
-          guitarSamplerRef.current?.triggerAttack(note, baseTime + timeOffset);
-        });
-      }
+    // UI Updates
+    if (!fromPlayback) {
+      setCurrentChord(chord);
+      setStatus(`${chord.name} selected`);
     }
 
   }, [initAudio, instruments.piano, instruments.guitar]);
 
   // Drum trigger logic
   const handleDrumSelect = useCallback(async (drumKey: string, fromPlayback: boolean = false, scheduledTime?: number) => {
-    if (!fromPlayback) await initAudio();
+    if (!fromPlayback && (!kickSynthRef.current || Tone.context.state !== 'running')) {
+      await initAudio();
+    }
     if (!fromPlayback && !instruments.drums) return;
 
+    const playTime = scheduledTime !== undefined ? scheduledTime : Tone.now();
+
+    if (drumKey === 'Z' && kickSynthRef.current) {
+      kickSynthRef.current.triggerAttackRelease('C1', '8n', playTime);
+    } else if (drumKey === 'X' && snareSynthRef.current) {
+      snareSynthRef.current.triggerAttackRelease('16n', playTime);
+    } else if (drumKey === 'C' && hihatSynthRef.current) {
+      hihatSynthRef.current.triggerAttackRelease('32n', playTime);
+    } else if (drumKey === 'V' && openHihatSynthRef.current) {
+      openHihatSynthRef.current.triggerAttackRelease('8n', playTime);
+    }
+
     if (isRecordingRef.current && !fromPlayback) {
-      const time = Tone.now() - recordingStartTimeRef.current;
+      const time = playTime - recordingStartTimeRef.current;
       activeLayerEventsRef.current.push({ type: 'drum', instrument: 'drums', drumKey, time });
     }
 
-    if (drumKey === 'Z' && kickSynthRef.current) {
-      if (scheduledTime !== undefined) {
-        kickSynthRef.current.triggerAttackRelease('C1', '8n', scheduledTime);
-      } else {
-        kickSynthRef.current.triggerAttackRelease('C1', '8n');
-      }
-      if (!fromPlayback) setStatus('Kick played');
-    } else if (drumKey === 'X' && snareSynthRef.current) {
-      if (scheduledTime !== undefined) {
-        snareSynthRef.current.triggerAttackRelease('16n', scheduledTime);
-      } else {
-        snareSynthRef.current.triggerAttackRelease('16n');
-      }
-      if (!fromPlayback) setStatus('Snare played');
-    } else if (drumKey === 'C' && hihatSynthRef.current) {
-      if (scheduledTime !== undefined) {
-        hihatSynthRef.current.triggerAttackRelease('32n', scheduledTime);
-      } else {
-        hihatSynthRef.current.triggerAttackRelease('32n');
-      }
-      if (!fromPlayback) setStatus('Closed Hi-Hat played');
-    } else if (drumKey === 'V' && openHihatSynthRef.current) {
-      if (scheduledTime !== undefined) {
-        openHihatSynthRef.current.triggerAttackRelease('8n', scheduledTime);
-      } else {
-        openHihatSynthRef.current.triggerAttackRelease('8n');
-      }
-      if (!fromPlayback) setStatus('Open Hi-Hat played');
+    if (!fromPlayback) {
+      if (drumKey === 'Z') setStatus('Kick played');
+      if (drumKey === 'X') setStatus('Snare played');
+      if (drumKey === 'C') setStatus('Closed Hi-Hat played');
+      if (drumKey === 'V') setStatus('Open Hi-Hat played');
     }
   }, [initAudio, instruments.drums]);
 
   // Setup keyboard event listeners
   useEffect(() => {
-    const handleKeyDown = async (e: KeyboardEvent) => {
+    const handleKeyDown = (e: KeyboardEvent) => {
       if (e.repeat) return;
 
       const keyChar = e.key.toUpperCase();
       const matchedChord = CHORDS.find((c) => c.trigger === keyChar);
 
       if (matchedChord) {
+        // Trigger audio first
+        handleChordSelect(matchedChord);
         // Mark as pressed
         setPressedKeys((prev) => ({ ...prev, [keyChar]: true }));
-        // Select chord, update status, and play audio
-        await handleChordSelect(matchedChord);
       } else if (keyChar === 'Z' || keyChar === 'X' || keyChar === 'C' || keyChar === 'V') {
+        // Trigger drum sound
+        handleDrumSelect(keyChar);
         // Mark drum key as pressed
         setPressedKeys((prev) => ({ ...prev, [keyChar]: true }));
-        // Trigger drum sound
-        await handleDrumSelect(keyChar);
       }
     };
 
